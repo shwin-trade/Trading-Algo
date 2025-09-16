@@ -10,7 +10,7 @@ class SurvivorStrategy:
     Survivor Options Trading Strategy
     
     This strategy implements a systematic approach to options trading based on price movements
-    of the NIFTY index. The core concept is to sell options (both PE and CE) when the underlying
+    of the index. The core concept is to sell options (both PE and CE) when the underlying
     index moves beyond certain thresholds, capturing premium decay while managing risk through
     dynamic gap adjustments.
     
@@ -18,11 +18,11 @@ class SurvivorStrategy:
     ==================
     
     1. **Dual-Side Trading**: The strategy monitors both upward and downward movements:
-       - PE (Put) Trading: Triggered when NIFTY price moves UP beyond pe_gap threshold
-       - CE (Call) Trading: Triggered when NIFTY price moves DOWN beyond ce_gap threshold
+       - PE (Put) Trading: Triggered when index price moves UP beyond pe_gap threshold
+       - CE (Call) Trading: Triggered when index price moves DOWN beyond ce_gap threshold
     
     2. **Gap-Based Execution**: 
-       - Maintains reference points (nifty_pe_last_value, nifty_ce_last_value)
+       - Maintains reference points (index_pe_last_value, index_ce_last_value)
        - Executes trades when price deviates beyond configured gaps
        - Uses multipliers to scale position sizes based on gap magnitude
     
@@ -39,21 +39,21 @@ class SurvivorStrategy:
     TRADING LOGIC EXAMPLE:
     =====================
     
-    Scenario: NIFTY at 24,500, pe_gap=25, pe_symbol_gap=200
+    Scenario: index at 24,500, pe_gap=25, pe_symbol_gap=200
     
-    1. Initial State: nifty_pe_last_value = 24,500
-    2. NIFTY rises to 24,530 (difference = 30)
+    1. Initial State: index_pe_last_value = 24,500
+    2. index rises to 24,530 (difference = 30)
     3. Since 30 > pe_gap(25), trigger PE sell
     4. Sell multiplier = 30/25 = 1 (rounded down)
     5. Select PE strike at 24,500-200 = 24,300 PE
-    6. Update reference: nifty_pe_last_value = 24,525 (24,500 + 25*1)
+    6. Update reference: index_pe_last_value = 24,525 (24,500 + 25*1)
     
     CONFIGURATION PARAMETERS:
     ========================
     
     Core Parameters:
-    - symbol_initials: Option series identifier (e.g., 'NIFTY25JAN30')
-    - index_symbol: Underlying index for tracking (e.g., 'NSE:NIFTY 50')
+    - symbol_initials: Option series identifier (e.g., 'index25JAN30')
+    - index_symbol: Underlying index for tracking (e.g., 'NSE:index 50')
     
     Gap Parameters:
     - pe_gap/ce_gap: Price movement thresholds to trigger trades
@@ -98,8 +98,11 @@ class SurvivorStrategy:
         self.strike_difference = self._get_strike_difference(self.symbol_initials)
         logger.info(f"Strike difference for {self.symbol_initials} is {self.strike_difference}")
 
-    def _nifty_quote(self):
-        symbol_code = "NSE:NIFTY 50"
+    def _index_quote(self):
+        #symbol_code = "BSE:SENSEX"
+        #return self.broker.get_quote(symbol_code)
+    
+        symbol_code = self.strat_var_index_symbol  # Use index_symbol from config
         return self.broker.get_quote(symbol_code)
 
     def _initialize_state(self):
@@ -109,29 +112,29 @@ class SurvivorStrategy:
         self.ce_reset_gap_flag = 0  # Set to 1 when CE trade is executed
         
         # Get current market data for initialization
-        current_quote = self._nifty_quote()
+        current_quote = self._index_quote()
         print(current_quote)  # Debug output
         
         # Initialize PE reference value
         if self.strat_var_pe_start_point == 0:
             # Use current market price as starting reference
-            self.nifty_pe_last_value = current_quote[self.strat_var_index_symbol]['last_price']
-            logger.debug(f"Nifty PE Start Point is 0, so using LTP: {self.nifty_pe_last_value}")
+            self.index_pe_last_value = current_quote[self.strat_var_index_symbol]['last_price']
+            logger.debug(f"index PE Start Point is 0, so using LTP: {self.index_pe_last_value}")
         else:
             # Use configured starting point
-            self.nifty_pe_last_value = self.strat_var_pe_start_point
+            self.index_pe_last_value = self.strat_var_pe_start_point
 
         # Initialize CE reference value
         if self.strat_var_ce_start_point == 0:
             # Use current market price as starting reference
-            self.nifty_ce_last_value = current_quote[self.strat_var_index_symbol]['last_price']
-            logger.debug(f"Nifty CE Start Point is 0, so using LTP: {self.nifty_ce_last_value}")
+            self.index_ce_last_value = current_quote[self.strat_var_index_symbol]['last_price']
+            logger.debug(f"index CE Start Point is 0, so using LTP: {self.index_ce_last_value}")
         else:
             # Use configured starting point
-            self.nifty_ce_last_value = self.strat_var_ce_start_point
+            self.index_ce_last_value = self.strat_var_ce_start_point
             
-        logger.info(f"Nifty PE Start Value during initialization: {self.nifty_pe_last_value}, "
-                   f"Nifty CE Start Value during initialization: {self.nifty_ce_last_value}")
+        logger.info(f"index PE Start Value during initialization: {self.index_pe_last_value}, "
+                   f"index CE Start Value during initialization: {self.index_ce_last_value}")
 
     def _get_strike_difference(self, symbol_initials):
         if self.strike_difference is not None:
@@ -202,10 +205,10 @@ class SurvivorStrategy:
         Handle PE (Put) option trading logic
         
         Args:
-            current_price (float): Current NIFTY index price
+            current_price (float): Current index price
             
         PE Trading Logic:
-        - Triggered when current_price > nifty_pe_last_value + pe_gap
+        - Triggered when current_price > index_pe_last_value + pe_gap
         - Sells PE options (benefits from upward price movement)
         - Updates reference value after execution
         
@@ -222,12 +225,12 @@ class SurvivorStrategy:
         - Sell 2x PE quantity, Update reference to 24,550
         """
         # No action needed if price hasn't moved up sufficiently
-        if current_price <= self.nifty_pe_last_value:
+        if current_price <= self.index_pe_last_value:
             self._log_stable_market(current_price)
             return
 
         # Calculate price difference and check if it exceeds gap threshold
-        price_diff = round(current_price - self.nifty_pe_last_value, 0)
+        price_diff = round(current_price - self.index_pe_last_value, 0)
         if price_diff > self.strat_var_pe_gap:
             # Calculate multiplier for position sizing
             sell_multiplier = int(price_diff / self.strat_var_pe_gap)
@@ -238,7 +241,7 @@ class SurvivorStrategy:
                 return
 
             # Update reference value based on executed gaps
-            self.nifty_pe_last_value += self.strat_var_pe_gap * sell_multiplier
+            self.index_pe_last_value += self.strat_var_pe_gap * sell_multiplier
             
             # Calculate total quantity to trade
             total_quantity = sell_multiplier * self.strat_var_pe_quantity
@@ -247,7 +250,7 @@ class SurvivorStrategy:
             temp_gap = self.strat_var_pe_symbol_gap
             while True:
                 # Find PE instrument at specified gap from current price
-                instrument = self._find_nifty_symbol_from_gap("PE", current_price, gap=temp_gap)
+                instrument = self._find_index_symbol_from_gap("PE", current_price, gap=temp_gap)
                 if not instrument:
                     logger.warning("No suitable instrument found for PE with gap %s", temp_gap)
                     return 
@@ -260,7 +263,7 @@ class SurvivorStrategy:
                 if quote['last_price'] < self.strat_var_min_price_to_sell:
                     logger.info(f"Last price {quote['last_price']} is less than min price to sell {self.strat_var_min_price_to_sell}")
                     # Try closer strike if premium is too low
-                    temp_gap -= self.strat_var_nifty_lot_size
+                    temp_gap -= self.strat_var_index_lot_size
                     continue
                     
                 # Execute the trade
@@ -276,10 +279,10 @@ class SurvivorStrategy:
         Handle CE (Call) option trading logic
         
         Args:
-            current_price (float): Current NIFTY index price
+            current_price (float): Current index price
             
         CE Trading Logic:
-        - Triggered when current_price < nifty_ce_last_value - ce_gap
+        - Triggered when current_price < index_ce_last_value - ce_gap
         - Sells CE options (benefits from downward price movement)
         - Updates reference value after execution
         
@@ -296,12 +299,12 @@ class SurvivorStrategy:
         - Sell 2x CE quantity, Update reference to 24,450
         """
         # No action needed if price hasn't moved down sufficiently
-        if current_price >= self.nifty_ce_last_value:
+        if current_price >= self.index_ce_last_value:
             self._log_stable_market(current_price)
             return
 
         # Calculate price difference and check if it exceeds gap threshold
-        price_diff = round(self.nifty_ce_last_value - current_price, 0)  
+        price_diff = round(self.index_ce_last_value - current_price, 0)  
         if price_diff > self.strat_var_ce_gap:
             # Calculate multiplier for position sizing
             sell_multiplier = int(price_diff / self.strat_var_ce_gap)
@@ -312,7 +315,7 @@ class SurvivorStrategy:
                 return
 
             # Update reference value based on executed gaps
-            self.nifty_ce_last_value -= self.strat_var_ce_gap * sell_multiplier
+            self.index_ce_last_value -= self.strat_var_ce_gap * sell_multiplier
             
             # Calculate total quantity to trade
             total_quantity = sell_multiplier * self.strat_var_ce_quantity
@@ -321,7 +324,7 @@ class SurvivorStrategy:
             temp_gap = self.strat_var_ce_symbol_gap 
             while True:
                 # Find CE instrument at specified gap from current price
-                instrument = self._find_nifty_symbol_from_gap("CE", current_price, gap=temp_gap)
+                instrument = self._find_index_symbol_from_gap("CE", current_price, gap=temp_gap)
                 if not instrument:
                     logger.warning("No suitable instrument found for CE with gap %s", temp_gap)
                     return
@@ -335,7 +338,7 @@ class SurvivorStrategy:
                 if quote['last_price'] < self.strat_var_min_price_to_sell:
                     logger.info(f"Last price {quote['last_price']} is less than min price to sell {self.strat_var_min_price_to_sell}, trying next strike")
                     # Try closer strike if premium is too low
-                    temp_gap -= self.strat_var_nifty_lot_size
+                    temp_gap -= self.strat_var_index_lot_size
                     continue
                     
                 # Execute the trade
@@ -351,7 +354,7 @@ class SurvivorStrategy:
         Reset reference values when market moves favorably
         
         Args:
-            current_price (float): Current NIFTY index price
+            current_price (float): Current index price
             
         Reset Logic:
         - PE Reset: When price drops significantly below PE reference AND reset flag is set
@@ -371,24 +374,24 @@ class SurvivorStrategy:
         - Difference: 70 > 50, so reset PE reference to 24,530 (24,480 + 50)
         """
         # PE Reset Logic: Reset when price drops significantly below PE reference
-        if (self.nifty_pe_last_value - current_price) > self.strat_var_pe_reset_gap and self.pe_reset_gap_flag:
-            logger.info(f"Resetting PE value from {self.nifty_pe_last_value} to {current_price + self.strat_var_pe_reset_gap}")
+        if (self.index_pe_last_value - current_price) > self.strat_var_pe_reset_gap and self.pe_reset_gap_flag:
+            logger.info(f"Resetting PE value from {self.index_pe_last_value} to {current_price + self.strat_var_pe_reset_gap}")
             # Reset PE reference to current price plus reset gap
-            self.nifty_pe_last_value = current_price + self.strat_var_pe_reset_gap
+            self.index_pe_last_value = current_price + self.strat_var_pe_reset_gap
 
         # CE Reset Logic: Reset when price rises significantly above CE reference  
-        if (current_price - self.nifty_ce_last_value) > self.strat_var_ce_reset_gap and self.ce_reset_gap_flag:
-            logger.info(f"Resetting CE value from {self.nifty_ce_last_value} to {current_price - self.strat_var_ce_reset_gap}")
+        if (current_price - self.index_ce_last_value) > self.strat_var_ce_reset_gap and self.ce_reset_gap_flag:
+            logger.info(f"Resetting CE value from {self.index_ce_last_value} to {current_price - self.strat_var_ce_reset_gap}")
             # Reset CE reference to current price minus reset gap
-            self.nifty_ce_last_value = current_price - self.strat_var_ce_reset_gap
+            self.index_ce_last_value = current_price - self.strat_var_ce_reset_gap
 
-    def _find_nifty_symbol_from_gap(self, option_type, ltp, gap):
+    def _find_index_symbol_from_gap(self, option_type, ltp, gap):
         """
         Find the most suitable option instrument based on strike distance from current price
         
         Args:
             option_type (str): 'PE' or 'CE' - type of option to find
-            ltp (float): Last traded price of the underlying (current NIFTY price)
+            ltp (float): Last traded price of the underlying (current index price)
             gap (int): Distance from current price to target strike
             
         Returns:
@@ -469,11 +472,11 @@ class SurvivorStrategy:
         
         while True:
             # Get current market price
-            ltp = self._nifty_quote()['last_price']
+            ltp = self._index_quote()['last_price']
             
             # Find instrument at current gap
-            instrument = self._find_nifty_symbol_from_gap(
-                self.instruments, self.strat_var_symbol_initials, temp_gap, option_type, ltp, self.strat_var_nifty_lot_size
+            instrument = self._find_index_symbol_from_gap(
+                self.instruments, self.strat_var_symbol_initials, temp_gap, option_type, ltp, self.strat_var_index_lot_size
             )
             
             if instrument is None:
@@ -485,7 +488,7 @@ class SurvivorStrategy:
             
             if price < self.strat_var_min_price_to_sell:
                 # Try closer strike if premium too low
-                temp_gap -= self.strat_var_nifty_lot_size
+                temp_gap -= self.strat_var_index_lot_size
             else:
                 return instrument
 
@@ -552,9 +555,9 @@ class SurvivorStrategy:
 
         """
         logger.info(
-            f"{self.strat_var_symbol_initials} Nifty under control. "
-            f"PE = {self.nifty_pe_last_value}, "
-            f"CE = {self.nifty_ce_last_value}, "
+            f"{self.strat_var_symbol_initials} index under control. "
+            f"PE = {self.index_pe_last_value}, "
+            f"CE = {self.index_ce_last_value}, "
             f"Current = {current_val}, "
             f"CE Gap = {self.strat_var_ce_gap}, "
             f"PE Gap = {self.strat_var_pe_gap}"
@@ -631,10 +634,7 @@ if __name__ == "__main__":
     # SECTION 1: CONFIGURATION LOADING AND PARSING
     # ==========================================================================
     
-    # Load default configuration from YAML file
-    config_file = os.path.join(os.path.dirname(__file__), "configs/survivor.yml")
-    with open(config_file, 'r') as f:
-        config = yaml.safe_load(f)['default']
+   
 
     def create_argument_parser():
         """Create and configure argument parser with detailed help"""
@@ -720,13 +720,13 @@ PARAMETER GROUPS:
         # =======================================================================
         
         parser.add_argument('--pe-gap', type=float,
-                        help='NIFTY upward movement threshold to trigger PE sells. '
-                             'E.g., if pe-gap is 25 and NIFTY moves up 30 points, '
+                        help='index upward movement threshold to trigger PE sells. '
+                             'E.g., if pe-gap is 25 and index moves up 30 points, '
                              'PE options will be sold (multiplier = 30/25 = 1).')
         
         parser.add_argument('--ce-gap', type=float,
-                        help='NIFTY downward movement threshold to trigger CE sells. '
-                             'E.g., if ce-gap is 25 and NIFTY moves down 30 points, '
+                        help='index downward movement threshold to trigger CE sells. '
+                             'E.g., if ce-gap is 25 and index moves down 30 points, '
                              'CE options will be sold (multiplier = 30/25 = 1).')
         
         # =======================================================================
@@ -735,12 +735,12 @@ PARAMETER GROUPS:
         
         parser.add_argument('--pe-reset-gap', type=float,
                         help='Favorable movement threshold to reset PE reference value. '
-                             'When NIFTY moves down by this amount after PE trades, '
+                             'When index moves down by this amount after PE trades, '
                              'the PE reference is reset closer to current price.')
         
         parser.add_argument('--ce-reset-gap', type=float,
                         help='Favorable movement threshold to reset CE reference value. '
-                             'When NIFTY moves up by this amount after CE trades, '
+                             'When index moves up by this amount after CE trades, '
                              'the CE reference is reset closer to current price.')
         
         # =======================================================================
@@ -802,6 +802,19 @@ PARAMETER GROUPS:
                              'Defaults to system/strategy/configs/survivor.yml')
         
         return parser
+    
+
+     # Load default configuration from YAML file
+    config_file = os.path.join(os.path.dirname(__file__), "configs/survivor.yml")
+
+    parser = create_argument_parser()
+    args = parser.parse_args()
+
+    if args.config_file:
+        config_file = args.config_file
+
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)['default']
 
     def show_config(config):
         """
@@ -863,8 +876,8 @@ PARAMETER GROUPS:
         print("\n" + "="*80)
         print("TRADING LOGIC SUMMARY:")
         print("="*80)
-        print(f"• PE Sells triggered when NIFTY rises >{config.get('pe_gap', 'N/A')} points")
-        print(f"• CE Sells triggered when NIFTY falls >{config.get('ce_gap', 'N/A')} points") 
+        print(f"• PE Sells triggered when index rises >{config.get('pe_gap', 'N/A')} points")
+        print(f"• CE Sells triggered when index falls >{config.get('ce_gap', 'N/A')} points") 
         print(f"• PE strikes selected ~{config.get('pe_symbol_gap', 'N/A')} points below spot")
         print(f"• CE strikes selected ~{config.get('ce_symbol_gap', 'N/A')} points above spot")
         print(f"• Minimum option premium: ₹{config.get('min_price_to_sell', 'N/A')}")
