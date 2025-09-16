@@ -52,8 +52,8 @@ class SurvivorStrategy:
     ========================
     
     Core Parameters:
-    - symbol_initials: Option series identifier (e.g., 'index25JAN30')
-    - index_symbol: Underlying index for tracking (e.g., 'NSE:index 50')
+    - symbol_initials: Option series identifier (e.g., 'NIFTY25JAN30')
+    - index_symbol: Underlying index for tracking (e.g., 'NSE:NIFTY 50')
     
     Gap Parameters:
     - pe_gap/ce_gap: Price movement thresholds to trigger trades
