@@ -265,7 +265,7 @@ class SurvivorStrategy:
                     
                 # Execute the trade
                 logger.info(f"Execute PE sell @ {instrument['tradingsymbol']} × {total_quantity}, Market Price")
-                self._place_order(instrument['tradingsymbol'], total_quantity)
+                self._place_order(instrument['tradingsymbol'], total_quantity, self.strat_var_trans_type)
                 
                 # Set reset flag to enable reset logic
                 self.pe_reset_gap_flag = 1
@@ -340,7 +340,7 @@ class SurvivorStrategy:
                     
                 # Execute the trade
                 logger.info(f"Execute CE sell @ {instrument['tradingsymbol']} × {total_quantity}, Market Price")
-                self._place_order(instrument['tradingsymbol'], total_quantity)
+                self._place_order(instrument['tradingsymbol'], total_quantity, self.strat_var_trans_type)
                 
                 # Set reset flag to enable reset logic
                 self.ce_reset_gap_flag = 1
@@ -489,13 +489,15 @@ class SurvivorStrategy:
             else:
                 return instrument
 
-    def _place_order(self, symbol, quantity):
+    def _place_order(self, symbol, quantity, transaction_type, tag="Survivor"):
         """
         Execute order placement through the broker
         
         Args:
             symbol (str): Trading symbol for the option
             quantity (int): Number of lots/shares to trade
+            transaction_type (str): 'BUY' or 'SELL'
+            tag (str): A tag for the order for identification
             
         Process:
         1. Place market order through broker interface
@@ -504,39 +506,37 @@ class SurvivorStrategy:
         4. Handle order failures gracefully
         
         Order Parameters:
-        - Transaction Type: From configuration (typically SELL)
         - Order Type: From configuration (typically MARKET)
         - Exchange: From configuration (typically NFO)
         - Product: From configuration (NRML/MIS)
         - Variety: Always REGULAR
-        - Tag: "Survivor" for identification
         """
         # Place order through broker interface
         order_id = self.broker.place_order(
-            symbol, 
-            quantity, 
+            symbol,
+            quantity,
             price=None,  # Market order
-            transaction_type=self.strat_var_trans_type, 
-            order_type=self.strat_var_order_type, 
-            variety="REGULAR", 
-            exchange=self.strat_var_exchange, 
-            product=self.strat_var_product_type, 
-            tag="Survivor"
+            transaction_type=transaction_type,
+            order_type=self.strat_var_order_type,
+            variety="REGULAR",
+            exchange=self.strat_var_exchange,
+            product=self.strat_var_product_type,
+            tag=tag
         )
-        
+
         # Handle order placement failure
         if order_id == -1:
-            logger.error(f"Order placement failed for {symbol} × {quantity}, Market Price")
+            logger.error(f"Order placement failed for {symbol} × {quantity}, {transaction_type}, Market Price")
             return
-            
-        logger.info(f"Placing order for {symbol} × {quantity}, Market Price")
-        
+
+        logger.info(f"Placing order for {symbol} × {quantity}, {transaction_type}, Market Price")
+
         # Track the order using OrderTracker
         from datetime import datetime
         order_details = {
             "order_id": order_id,
             "symbol": symbol,
-            "transaction_type": self.strat_var_trans_type,
+            "transaction_type": transaction_type,
             "quantity": quantity,
             "price": None,  # Market order
             "timestamp": datetime.now().isoformat(),
@@ -545,6 +545,44 @@ class SurvivorStrategy:
         # Add to order tracking system
         self.order_manager.add_order(order_details)
         
+    def square_off_all_positions(self):
+        """
+        Squares off all open positions by placing opposite orders.
+        """
+        logger.info("SQUARING OFF ALL POSITIONS...")
+
+        open_orders = self.order_manager.non_completed_orders
+        if not open_orders:
+            logger.info("No open positions to square off.")
+            return
+
+        for order in open_orders:
+            symbol = order.get('symbol')
+            quantity = order.get('quantity')
+            original_trans_type = order.get('transaction_type')
+            order_id = order.get('order_id')
+
+            if not all([symbol, quantity, original_trans_type, order_id]):
+                logger.warning(f"Skipping invalid open order: {order}")
+                continue
+
+            # Determine opposite transaction type
+            if original_trans_type == 'SELL':
+                square_off_trans_type = 'BUY'
+            else:
+                logger.warning(f"Cannot square off order with transaction type '{original_trans_type}'. Skipping.")
+                continue
+
+            logger.info(f"Squaring off position: {square_off_trans_type} {quantity} of {symbol}")
+
+            # Place the square-off order
+            self._place_order(symbol, quantity, square_off_trans_type, tag="Survivor-Exit")
+
+            # Mark the original order as completed
+            self.order_manager.complete_order(order_id)
+
+        logger.info("All open positions have been squared off.")
+
 
     def _log_stable_market(self, current_val):
         """
@@ -618,10 +656,11 @@ if __name__ == "__main__":
     from strategy.survivor import SurvivorStrategy
     from brokers.zerodha import ZerodhaBroker
     from logger import logger
-    from queue import Queue
+    from queue import Queue, Empty
     import random
     import traceback
     import warnings
+    from datetime import datetime
     warnings.filterwarnings("ignore")
 
     import logging
@@ -789,6 +828,10 @@ PARAMETER GROUPS:
                              'position sizes during large market moves. E.g., if threshold '
                              'is 3 and calculated multiplier is 4, trade will be blocked.')
         
+        parser.add_argument('--exit-time', type=str,
+                        help='Time to square off all positions and exit (HH:MM format). '
+                             'E.g., --exit-time 15:15 to exit at 3:15 PM.')
+
         # =======================================================================
         # UTILITY OPTIONS
         # =======================================================================
@@ -900,7 +943,8 @@ PARAMETER GROUPS:
         'ce_start_point': 'ce_start_point',
         'trans_type': 'trans_type',
         'min_price_to_sell': 'min_price_to_sell',
-        'sell_multiplier_threshold': 'sell_multiplier_threshold'
+        'sell_multiplier_threshold': 'sell_multiplier_threshold',
+        'exit_time': 'exit_time'
     }
 
     # Apply command line overrides to configuration
@@ -1119,13 +1163,35 @@ PARAMETER GROUPS:
     # SECTION 7: MAIN TRADING LOOP
     # ==========================================================================
     
+    # Set exit time from config or use default
+    exit_time_str = config.get('exit_time', '15:15')
+    exit_hour, exit_minute = map(int, exit_time_str.split(':'))
+    exit_time_obj = datetime.now().replace(hour=exit_hour, minute=exit_minute, second=0, microsecond=0).time()
+
     try:
         while True:
+            # Check if today is Tuesday (weekday 1)
+            if datetime.now().weekday() == 1:
+                logger.info("Today is Tuesday, a no-trade day. Sleeping for 1 minute.")
+                time.sleep(60)
+                continue
+
+            # Check for exit time
+            if datetime.now().time() > exit_time_obj:
+                logger.info(f"Exit time of {exit_time_str} reached. Squaring off positions and shutting down.")
+                strategy.square_off_all_positions()
+                break
+
             try:
                 # STEP 1: Get market data from dispatcher queue
                 # This call blocks until new tick data arrives from websocket
-                tick_data = dispatcher._main_queue.get()
-                
+                try:
+                    tick_data = dispatcher._main_queue.get(timeout=5) # Use timeout to allow loop to check time
+                except Empty:
+                    # No new tick, continue to next loop iteration to check time again
+                    logger.debug("No new ticks received in last 5 seconds.")
+                    continue
+
                 # STEP 2: Extract the primary instrument data
                 # tick_data is a list, we process the first instrument
                 symbol_data = tick_data[0]
