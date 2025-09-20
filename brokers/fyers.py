@@ -31,51 +31,96 @@ load_dotenv()
 # Per Second: 10, Per Minute: 200, Per Day: 100000
 def fyers_rate_limit(func):
     """
-    Comprehensive rate limiting decorator for Fyers API calls.
-    Enforces: 10 calls/second, 200 calls/minute, 100000 calls/day
+    A decorator to enforce Fyers API rate limits on a function.
+
+    This decorator applies multiple rate limits:
+    - 10 calls per second
+    - 200 calls per minute
+    - 100,000 calls per day
+
+    If a limit is exceeded, the decorator will pause execution and retry.
+
+    Args:
+        func (callable): The function to be rate-limited.
+
+    Returns:
+        callable: The wrapped function with rate limiting applied.
     """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        # Apply rate limiting at all levels
-        # This will automatically sleep if limits are exceeded
         logger.debug(f"Rate limiting applied to {func.__name__}")
         return func(*args, **kwargs)
     
-    # Apply the rate limiting decorators
-    wrapper = sleep_and_retry(limits(calls=10, period=1))(wrapper)  # 10 per second
-    wrapper = sleep_and_retry(limits(calls=200, period=60))(wrapper)  # 200 per minute  
-    wrapper = sleep_and_retry(limits(calls=100000, period=86400))(wrapper)  # 100000 per day
+    # Apply the rate limiting decorators in order
+    wrapper = sleep_and_retry(limits(calls=10, period=1))(wrapper)
+    wrapper = sleep_and_retry(limits(calls=200, period=60))(wrapper)
+    wrapper = sleep_and_retry(limits(calls=100000, period=86400))(wrapper)
     
     return wrapper
 
-def getEncodedString(string):
+def getEncodedString(string: str) -> str:
+    """
+    Encodes a string to a Base64 ASCII string.
+
+    Args:
+        string (str): The input string to encode.
+
+    Returns:
+        str: The Base64 encoded string.
+    """
     return base64.b64encode(str(string).encode("ascii")).decode("ascii")
 
 
 class FyersBroker(BrokerBase):
     """
-    A unified broker class for Fyers that provides:
+    A broker implementation for Fyers API v3.
 
-    1. REST-based methods to retrieve historical data and quotes.
-    2. A WebSocket connection for live data streaming, using the provided callbacks.
+    This class provides a comprehensive interface for interacting with the Fyers
+    platform, including both REST API for historical data, quotes, and order
+    management, and a WebSocket connection for live data streaming.
 
-    Parameters for the WebSocket connection (symbols, data_type, log_path, litemode,
-    write_to_file, reconnect, data_handler) are accepted in the constructor.
+    It handles the complete TOTP-based authentication flow, rate limiting,
+    and session management.
 
-    This class keeps the two approaches distinct while consolidating them into a single class.
+    Attributes:
+        fyers_model (fyersModel.FyersModel): The Fyers API model instance for
+            making REST API calls.
+        symbols (list): A list of symbols for WebSocket subscription.
+        data_type (str): The type of data to subscribe to via WebSocket.
+        ws (FyersDataSocket): The Fyers WebSocket instance.
     """
 
     def __init__(
         self,
-        symbols=None,
-        data_type="SymbolUpdate",
-        log_path="",
-        litemode=False,
-        write_to_file=False,
-        reconnect=True,
-        data_handler=None,
+        symbols: Optional[List[str]] = None,
+        data_type: str = "SymbolUpdate",
+        log_path: str = "",
+        litemode: bool = False,
+        write_to_file: bool = False,
+        reconnect: bool = True,
+        data_handler: Optional[Any] = None,
     ):
-        # Authenticate and initialize REST model
+        """
+        Initializes the FyersBroker instance.
+
+        This sets up the Fyers API model, performs authentication, and configures
+        parameters for the WebSocket connection.
+
+        Args:
+            symbols (list, optional): A list of symbols to subscribe to for live
+                data. Defaults to a sample list.
+            data_type (str, optional): The type of WebSocket data to receive
+                (e.g., "SymbolUpdate", "OrderUpdate"). Defaults to "SymbolUpdate".
+            log_path (str, optional): The path to store logs. Defaults to "".
+            litemode (bool, optional): Whether to use litemode for WebSocket.
+                Defaults to False.
+            write_to_file (bool, optional): Whether to write WebSocket data to
+                a file. Defaults to False.
+            reconnect (bool, optional): Whether the WebSocket should attempt to
+                reconnect on disconnection. Defaults to True.
+            data_handler (any, optional): An object with a `data_queue` to which
+                live data will be pushed. Defaults to None.
+        """
         logger.info("Initializing FyersBroker...")
         self.access_token, self.auth_response_data = self.authenticate()
         self.fyers_model = fyersModel.FyersModel(
@@ -94,29 +139,36 @@ class FyersBroker(BrokerBase):
         self.write_to_file = write_to_file
         self.reconnect = reconnect
         self.data_handler = data_handler
-        self.ws = None  # Placeholder for the WebSocket instance
+        self.ws = None
 
-        # === Begin Benchmark Tracking Changes ===
         self._benchmark = False
-        # Dictionary to count messages per ticker in the current second.
         self.ticker_second_counts = {}
-        # Cumulative accumulators over a 1-minute window.
         self.minute_seconds_count = 0
         self.cumulative_distinct_tickers = 0
         self.cumulative_ticker_counts = {}
-        # Lock to avoid race conditions.
         self.benchmark_lock = threading.Lock()
         if self._benchmark:
-            # Start background threads to aggregate per-second counts and print per-minute averages.
             threading.Thread(target=self._aggregate_second, daemon=True).start()
             threading.Thread(target=self._benchmark_minute, daemon=True).start()
-        # === End Benchmark Tracking Changes ===
     
     def authenticate(self) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
         """
-        Authenticate with FYERS API using TOTP and return access token with user details.
+        Performs the TOTP-based authentication flow for Fyers API v3.
+
+        This method automates the multi-step authentication process:
+        1. Sends a login OTP request.
+        2. Verifies the TOTP.
+        3. Verifies the user's PIN.
+        4. Obtains an authorization code.
+        5. Exchanges the auth code for a final access token.
+
+        It requires several environment variables to be set, including
+        `BROKER_ID`, `BROKER_TOTP_KEY`, `BROKER_API_KEY`, etc.
+
         Returns:
-            Tuple of (access_token, response_data).
+            A tuple containing the access token (str) and the full
+            authentication response data (dict) if successful. If it fails,
+            returns (None, error_data_dict).
         """
         response_data = {
             'status': 'error',
@@ -124,43 +176,43 @@ class FyersBroker(BrokerBase):
             'data': None
         }
         try:
-            # Required env vars
             fy_id = os.environ['BROKER_ID']
             totp_key = os.environ['BROKER_TOTP_KEY']
             pin = os.environ['BROKER_TOTP_PIN']
             client_id = os.environ['BROKER_API_KEY']
             secret_key = os.environ['BROKER_API_SECRET']
             redirect_uri = os.environ['BROKER_TOTP_REDIDRECT_URI']
-            response_type = "code" # Should be always `code`
-            grant_type = "authorization_code" # Should be always `authorization_code`
-            # Step 1: Send login OTP
+            response_type = "code"
+            grant_type = "authorization_code"
+
             URL_SEND_LOGIN_OTP = "https://api-t2.fyers.in/vagator/v2/send_login_otp_v2"
             res = requests.post(url=URL_SEND_LOGIN_OTP, json={
                 "fy_id": getEncodedString(fy_id),
                 "app_id": "2"
             }).json()
+
             if datetime.now().second % 30 > 27:
                 time.sleep(5)
-            # Step 2: Verify OTP
+
             URL_VERIFY_OTP = "https://api-t2.fyers.in/vagator/v2/verify_otp"
             res2 = requests.post(url=URL_VERIFY_OTP, json={
                 "request_key": res["request_key"],
                 "otp": pyotp.TOTP(totp_key).now()
             }).json()
-            # Step 3: Verify PIN
+
             ses = requests.Session()
-            URL_VERIFY_OTP2 = "https://api-t2.fyers.in/vagator/v2/verify_pin_v2"
+            URL_VERIFY_PIN = "https://api-t2.fyers.in/vagator/v2/verify_pin_v2"
             payload2 = {
                 "request_key": res2["request_key"],
                 "identity_type": "pin",
                 "identifier": getEncodedString(pin)
             }
-            res3 = ses.post(url=URL_VERIFY_OTP2, json=payload2).json()
+            res3 = ses.post(url=URL_VERIFY_PIN, json=payload2).json()
             ses.headers.update({
                 'authorization': f"Bearer {res3['data']['access_token']}"
             })
-            # Step 4: Get auth code
-            TOKENURL = "https://api-t1.fyers.in/api/v3/token"
+
+            URL_TOKEN = "https://api-t1.fyers.in/api/v3/token"
             payload3 = {
                 "fyers_id": fy_id,
                 "app_id": client_id[:-4],
@@ -173,12 +225,11 @@ class FyersBroker(BrokerBase):
                 "response_type": "code",
                 "create_cookie": True
             }
-            res4 = ses.post(url=TOKENURL, json=payload3).json()
+            res4 = ses.post(url=URL_TOKEN, json=payload3).json()
             parsed = urlparse(res4['Url'])
             auth_code = parse_qs(parsed.query)['auth_code'][0]
-            # Step 5: Exchange auth code for access token
-            import hashlib
-            url = 'https://api-t1.fyers.in/api/v3/validate-authcode'
+
+            URL_VALIDATE_AUTHCODE = 'https://api-t1.fyers.in/api/v3/validate-authcode'
             checksum_input = f"{client_id}:{secret_key}"
             app_id_hash = hashlib.sha256(checksum_input.encode('utf-8')).hexdigest()
             payload = {
@@ -186,13 +237,10 @@ class FyersBroker(BrokerBase):
                 'appIdHash': app_id_hash,
                 'code': auth_code
             }
-            headers = {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            }
-            response = ses.post(url, headers=headers, json=payload, timeout=30.0)
+            response = ses.post(URL_VALIDATE_AUTHCODE, headers={'Content-Type': 'application/json'}, json=payload, timeout=30.0)
             response.raise_for_status()
             auth_data = response.json()
+
             if auth_data.get('s') == 'ok':
                 access_token = auth_data.get('access_token')
                 if not access_token:
@@ -201,81 +249,54 @@ class FyersBroker(BrokerBase):
                 response_data.update({
                     'status': 'success',
                     'message': 'Authentication successful',
-                    'data': {
-                        'access_token': access_token,
-                        'refresh_token': auth_data.get('refresh_token'),
-                        'expires_in': auth_data.get('expires_in')
-                    }
+                    'data': auth_data
                 })
                 return access_token, response_data
             else:
-                error_msg = auth_data.get('message', 'Authentication failed')
-                response_data['message'] = f"API error: {error_msg}"
+                response_data['message'] = f"API error: {auth_data.get('message', 'Authentication failed')}"
                 return None, response_data
         except Exception as e:
             response_data['message'] = f"Authentication failed: {str(e)}"
             return None, response_data
 
-
-    # === Begin Benchmark Aggregation Method ===
     def _aggregate_second(self):
-        """Accumulate per-second data and update cumulative counters."""
+        """(Internal) Accumulates per-second data for benchmarking."""
         while True:
-            time.sleep(1)  # Wait for one second interval
+            time.sleep(1)
             with self.benchmark_lock:
-                # Snapshot and reset the per-second ticker counts.
                 current_counts = self.ticker_second_counts
                 self.ticker_second_counts = {}
-            # Compute distinct tickers in this second.
             distinct_this_second = len(current_counts)
             with self.benchmark_lock:
                 self.minute_seconds_count += 1
                 self.cumulative_distinct_tickers += distinct_this_second
-                # For each ticker, update cumulative count.
                 for ticker, count in current_counts.items():
-                    self.cumulative_ticker_counts[ticker] = (
-                        self.cumulative_ticker_counts.get(ticker, 0) + count
-                    )
+                    self.cumulative_ticker_counts[ticker] = self.cumulative_ticker_counts.get(ticker, 0) + count
 
-    # === End Benchmark Aggregation Method ===
-
-    # === Begin Benchmark Reporting Method ===
     def _benchmark_minute(self):
-        """Every minute, compute and print the average distinct tickers per second and average messages per ticker per second."""
+        """(Internal) Computes and prints benchmark stats every minute."""
         while True:
-            time.sleep(60)  # One-minute interval
+            time.sleep(60)
             with self.benchmark_lock:
                 if self.minute_seconds_count == 0:
-                    continue  # Avoid division by zero
-                avg_distinct = (
-                    self.cumulative_distinct_tickers / self.minute_seconds_count
-                )
-                report_lines = []
-                report_lines.append("Benchmark (over last minute):")
-                report_lines.append(
+                    continue
+                avg_distinct = self.cumulative_distinct_tickers / self.minute_seconds_count
+                report_lines = [
+                    "Benchmark (over last minute):",
                     f"Average distinct tickers per second: {avg_distinct:.2f}"
-                )
-                tickers_counts = 0
-                total_counts = 0
-                for ticker, total_count in self.cumulative_ticker_counts.items():
-                    if total_count > 0:
-                        tickers_counts += 1
-                        total_counts += total_count
-
+                ]
+                tickers_counts = sum(1 for count in self.cumulative_ticker_counts.values() if count > 0)
+                total_counts = sum(self.cumulative_ticker_counts.values())
                 avg_msgs = total_counts / self.minute_seconds_count
-                report_lines.append(
-                    f"Summary Records per Second\t {avg_msgs:.2f} from {tickers_counts} tickers - {total_counts} records in {self.minute_seconds_count} seconds"
-                )
+                report_lines.append(f"Summary Records per Second\t {avg_msgs:.2f} from {tickers_counts} tickers - {total_counts} records in {self.minute_seconds_count} seconds")
                 print("\n" + "\n".join(report_lines))
-                # Reset cumulative counters for the next minute.
+
                 self.minute_seconds_count = 0
                 self.cumulative_distinct_tickers = 0
                 self.cumulative_ticker_counts = {}
 
-    # === End Benchmark Reporting Method ===
-
     def _init_context(self):
-        """Initialize context for tracking API calls."""
+        """(Internal) Initializes a context file for tracking API calls."""
         if os.path.exists("FyersModel.json"):
             with open("FyersModel.json", "r") as f:
                 self.context = json.load(f)
@@ -285,290 +306,176 @@ class FyersBroker(BrokerBase):
             self._create_context()
 
     def _create_context(self):
+        """(Internal) Creates a new context file."""
         self.context = {"TOTAL_API_CALLS": 0, "DATE": str(datetime.now().date())}
         with open("FyersModel.json", "w") as f:
             json.dump(self.context, f)
 
     def update_context(self):
+        """(Internal) Updates the API call count in the context file."""
         self.context["TOTAL_API_CALLS"] += 1
-        self.context["DATE"] = str(datetime.now().date())
         with open("FyersModel.json", "w") as f:
             json.dump(self.context, f)
 
-    def get_access_token(self):
-        return self.access_token
-
-    # REST-based data retrieval methods
-    @fyers_rate_limit
-    def get_history(self, symbol: str, resolution: str, start_date: str, end_date: str, oi_flag: bool = False):
+    def get_access_token(self) -> Optional[str]:
         """
-        Retrieve historical data via REST, handling API limitations by breaking requests into
-        smaller chunks based on resolution.
-
-        Args:
-            symbol (str): Trading symbol (e.g., "SBIN" or "NSE:SBIN-EQ")
-            resolution (str): Timeframe resolution (e.g., "1", "5", "D", "1D", "5S")
-            start_date (str): Start date in format YYYY-MM-DD
-            end_date (str): End date in format YYYY-MM-DD
+        Retrieves the current access token.
 
         Returns:
-            dict: Combined historical data response with all candles
+            The access token string, or None if not authenticated.
         """
-        # Format symbol if needed
-        formatted_symbol = (
-            f"NSE:{symbol}-EQ" if not symbol.startswith("NSE") else symbol
-        )
+        return self.access_token
 
-        # Convert string dates to datetime objects
+    @fyers_rate_limit
+    def get_history(self, symbol: str, resolution: str, start_date: str, end_date: str, oi_flag: bool = False) -> Dict[str, Any]:
+        """
+        Retrieves historical market data for a symbol.
+
+        This method handles API limitations by automatically breaking down long
+        date ranges into smaller chunks acceptable by the Fyers API.
+
+        Args:
+            symbol (str): The trading symbol (e.g., "NSE:SBIN-EQ").
+            resolution (str): The timeframe resolution (e.g., "1", "D", "5S").
+            start_date (str): The start date in "YYYY-MM-DD" format.
+            end_date (str): The end date in "YYYY-MM-DD" format.
+            oi_flag (bool, optional): Whether to fetch Open Interest data.
+                Defaults to False.
+
+        Returns:
+            A dictionary containing the historical data, typically with a
+            'candles' key.
+        """
+        formatted_symbol = f"NSE:{symbol}-EQ" if not symbol.startswith("NSE") else symbol
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
-        # Determine chunk size based on resolution
         if resolution in ["D", "1D"]:
-            # For daily resolution: up to 366 days per request
             max_days = 366
-        elif resolution in ["5S", "10S", "15S", "30S", "45S"]:
-            # For seconds resolution: up to 30 trading days
+        elif resolution.endswith("S"):
             max_days = 30
         else:
-            # For minute resolutions: up to 100 days per request
             max_days = 100
 
-        # Initialize result container
         all_candles = []
-
-        # Break the date range into chunks
         current_start = start_dt
         while current_start <= end_dt:
-            # Calculate end date for this chunk
             current_end = min(current_start + timedelta(days=max_days - 1), end_dt)
-
-            # Format dates for API request
             chunk_start = current_start.strftime("%Y-%m-%d")
             chunk_end = current_end.strftime("%Y-%m-%d")
 
-            logger.info(
-                f"Fetching {formatted_symbol} data from {chunk_start} to {chunk_end} with resolution {resolution}"
-            )
+            logger.info(f"Fetching {formatted_symbol} data from {chunk_start} to {chunk_end} with resolution {resolution}")
 
-            # Prepare request parameters
             data_headers = {
-                "symbol": formatted_symbol,
-                "resolution": resolution,
-                "date_format": "1",
-                "range_from": chunk_start,
-                "range_to": chunk_end,
-                "cont_flag": "1"
+                "symbol": formatted_symbol, "resolution": resolution,
+                "date_format": "1", "range_from": chunk_start,
+                "range_to": chunk_end, "cont_flag": "1"
             }
             if oi_flag:
                 data_headers["oi_flag"] = "1"
-            # Make the API call
+
             chunk_data = self.fyers_model.history(data_headers)
             self.update_context()
 
-            # Check if we got valid data
-            if "candles" in chunk_data and len(chunk_data["candles"]) > 0:
+            if "candles" in chunk_data and chunk_data["candles"]:
                 all_candles.extend(chunk_data["candles"])
-            else:
-                # logger.warning(f"No data returned for {formatted_symbol} from {chunk_start} to {chunk_end}")
-                pass
-            # Add a small delay to avoid rate limiting
-            time.sleep(0.5)
 
-            # Move to next chunk
+            time.sleep(0.5)
             current_start = current_end + timedelta(days=1)
 
-        # Return combined result
         if not all_candles:
-            # logger.warning(f"No historical data returned for {symbol} from {start_date} to {end_date}.")
             return {"s": "no_data", "candles": []}
 
         return {"s": "ok", "candles": all_candles}
     
     @fyers_rate_limit
-    def get_option_chain(self, data: dict, strikecount: int = 5):
+    def get_option_chain(self, data: dict, strikecount: int = 5) -> Dict[str, Any]:
         """
-        Retrieve option chain via REST.
+        Retrieves the option chain for a given underlying symbol.
+
+        Args:
+            data (dict): A dictionary containing parameters like 'symbol'.
+            strikecount (int, optional): The number of strikes to fetch around
+                the ATM. Defaults to 5.
+
+        Returns:
+            A dictionary containing the option chain data.
         """
         data["strikecount"] = strikecount
         result = self.fyers_model.optionchain(data)
         self.update_context()
         return result
-    
 
     @fyers_rate_limit
-    def get_quotes(self, data: dict):
+    def get_quotes(self, data: dict) -> Dict[str, Any]:
         """
-        Retrieve current quotes via REST.
+        Retrieves real-time quotes for one or more symbols.
 
         Args:
-            data (dict): Parameters for quote data.
+            data (dict): A dictionary containing a 'symbols' key with a
+                comma-separated string of symbols.
 
         Returns:
-            dict: Quotes data response.
+            A dictionary containing the quote data.
         """
         result = self.fyers_model.quotes(data)
         self.update_context()
         return result
 
     @fyers_rate_limit
-    def get_margin(self, symbols: list, use_curl=True):
+    def get_margin(self, symbols: list, use_curl: bool = True) -> Dict[str, Any]:
         """
-        Get margin details for the provided symbols.
+        Calculates the required margin for a list of symbols.
 
         Args:
-            symbols (list): List of symbol strings.
+            symbols (list): A list of trading symbols.
+            use_curl (bool, optional): Whether to use a `curl` subprocess
+                for the request. Defaults to True.
 
         Returns:
-            dict: Margin information.
+            A dictionary with symbols as keys and their margin leverage as values,
+            or an error dictionary.
         """
         url = "https://api-t1.fyers.in/api/v3/multiorder/margin"
-        headers = {
-            "Authorization": f"{os.environ['BROKER_API_KEY']}:{self.access_token}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Authorization": f"{os.environ['BROKER_API_KEY']}:{self.access_token}"}
         data = {"symbols": ",".join(symbols)}
-        fyers = fyersModel.FyersModel(
-            client_id=os.environ["BROKER_API_KEY"], token=self.access_token, is_async=False, log_path=""
-        )
+        fyers = fyersModel.FyersModel(client_id=os.environ["BROKER_API_KEY"], token=self.access_token, is_async=False, log_path="")
         MARGIN_DICT = {}
-        # while True:
+
         response_q = fyers.quotes(data=data)
         for i, symbol in enumerate(symbols):
-            order_template = [
-                {
-                    "symbol": symbol,
-                    "qty": 1,
-                    "side": 1,
-                    "type": 2,
-                    "productType": "INTRADAY",
-                    "limitPrice": 0.0,
-                    "stopLoss": 0.0,
-                    "stopPrice": 0.0,
-                    "takeProfit": 0.0,
-                }
-            ]
-
+            order_template = [{"symbol": symbol, "qty": 1, "side": 1, "type": 2, "productType": "INTRADAY"}]
             payload = json.dumps({"data": order_template})
-            if use_curl:
-                curl_command = [
-                    "curl",
-                    "--location",
-                    "--request",
-                    "POST",
-                    url,
-                    "--header",
-                    f"Authorization: {headers['Authorization']}",
-                    "--header",
-                    "Content-Type: application/json",
-                    "--data-raw",
-                    payload,
-                ]
 
-                try:
-                    result = subprocess.run(
-                        curl_command, capture_output=True, text=True, check=True
-                    )
-                    try:
-                        MARGIN_DICT[symbol] = round(
-                            response_q["d"][i]["v"]["lp"]
-                            / json.loads(result.stdout)["data"]["margin_total"]
-                        )
-                    except:
-                        MARGIN_DICT[symbol] = 1
-                except subprocess.CalledProcessError as e:
-                    return {"error": e.stderr}
-
-            else:
-                try:
+            try:
+                if use_curl:
+                    curl_command = ["curl", "-X", "POST", url, "-H", f"Authorization: {headers['Authorization']}", "-H", "Content-Type: application/json", "--data-raw", payload]
+                    result = subprocess.run(curl_command, capture_output=True, text=True, check=True)
+                    response_json = json.loads(result.stdout)
+                else:
                     response = requests.post(url, headers=headers, data=payload)
                     response.raise_for_status()
-                    MARGIN_DICT[symbol] = round(
-                        response_q["d"][i]["v"]["lp"]
-                        / response.json()["data"]["margin_total"]
-                    )
-                except requests.exceptions.RequestException as e:
-                    return {"error": str(e)}
+                    response_json = response.json()
+
+                margin_total = response_json.get("data", {}).get("margin_total")
+                lp = response_q.get("d", [])[i].get("v", {}).get("lp")
+                MARGIN_DICT[symbol] = round(lp / margin_total) if margin_total else 1
+            except Exception as e:
+                logger.error(f"Failed to get margin for {symbol}: {e}")
+                MARGIN_DICT[symbol] = 1
             time.sleep(1)
         return MARGIN_DICT
 
-
-    @fyers_rate_limit
-    def get_span_margin(self, order_data, use_curl=False):
+    def connect_websocket(self) -> data_ws.FyersDataSocket:
         """
-        Calculate span and exposure margin required for the given stock symbols using Fyers API.
+        Establishes and returns a WebSocket connection for live data.
 
-        Args:
-            order_data (list): List of dicts, each with keys: symbol, qty, side, type, productType, limitPrice, stopLoss
-            use_curl (bool): If True, use curl subprocess; else use requests (default).
+        It configures the WebSocket client with the parameters provided during
+        initialization and sets up the internal callbacks for handling messages,
+        connection open/close events.
+
         Returns:
-            dict: API response with margin details or error.
-        """
-        url = "https://api.fyers.in/api/v2/span_margin"
-        headers = {
-            "Authorization": f"{self.fyers_model.client_id}:{self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = json.dumps({"data": order_data})
-        try:
-            if use_curl:
-                curl_command = [
-                    "curl", "--location", "--request", "POST", url,
-                    "--header", f"Authorization: {headers['Authorization']}",
-                    "--header", "Content-Type: application/json",
-                    "--data-raw", payload,
-                ]
-                result = subprocess.run(curl_command, capture_output=True, text=True, check=True)
-                return json.loads(result.stdout)
-            else:
-                response = requests.post(url, headers=headers, data=payload)
-                response.raise_for_status()
-                return response.json()
-        except Exception as e:
-            logger.error(f"Error in FyersBroker.get_span_margin: {e}")
-            return {"error": str(e)}
-
-    @fyers_rate_limit
-    def get_multiorder_margin(self, order_data, use_curl=False):
-        """
-        Calculate margin required for a list of order bodies using Fyers Multiorder Margin API.
-
-        Args:
-            order_data (list): List of dicts, each with keys: symbol, qty, side, type, productType, limitPrice, stopLoss, stopPrice, takeProfit
-            use_curl (bool): If True, use curl subprocess; else use requests (default).
-        Returns:
-            dict: API response with margin details or error.
-        """
-        url = "https://api-t1.fyers.in/api/v3/multiorder/margin"
-        headers = {
-            "Authorization": f"{self.fyers_model.client_id}:{self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = json.dumps({"data": order_data})
-        try:
-            if use_curl:
-                curl_command = [
-                    "curl", "--location", "--request", "POST", url,
-                    "--header", f"Authorization: {headers['Authorization']}",
-                    "--header", "Content-Type: application/json",
-                    "--data-raw", payload,
-                ]
-                result = subprocess.run(curl_command, capture_output=True, text=True, check=True)
-                return json.loads(result.stdout)
-            else:
-                response = requests.post(url, headers=headers, data=payload)
-                response.raise_for_status()
-                return response.json()
-        except Exception as e:
-            logger.error(f"Error in FyersBroker.get_multiorder_margin: {e}")
-            return {"error": str(e)}
-
-    # WebSocket-based live data methods
-    def connect_websocket(self):
-        """
-        Establish a WebSocket connection for live data streaming.
-
-        Uses the provided parameters (symbols, data_type, log_path, etc.) and callbacks.
+            The configured and connected FyersDataSocket instance.
         """
         self.ws = data_ws.FyersDataSocket(
             access_token=self.access_token,
@@ -583,34 +490,22 @@ class FyersBroker(BrokerBase):
         self.ws.connect()
         return self.ws
 
-    def _on_ws_message(self, message):
-        """
-        Internal callback for handling WebSocket messages.
-        """
-        # Process the message; if a data handler is provided, pass the data.
+    def _on_ws_message(self, message: Dict[str, Any]):
+        """(Internal) Callback for handling incoming WebSocket messages."""
         print(message)
         if "symbol" in message:
             if self._benchmark:
                 with self.benchmark_lock:
-                    self.ticker_second_counts[message["symbol"]] = (
-                        self.ticker_second_counts.get(message["symbol"], 0) + 1
-                    )
-            if self.data_handler:
+                    self.ticker_second_counts[message["symbol"]] = self.ticker_second_counts.get(message["symbol"], 0) + 1
+            if self.data_handler and hasattr(self.data_handler, 'data_queue'):
                 self.data_handler.data_queue.put(message)
-            else:
-                # print(message)
-                pass
 
-    def _on_ws_close(self, message):
-        """
-        Internal callback for handling WebSocket closure.
-        """
+    def _on_ws_close(self, message: Dict[str, Any]):
+        """(Internal) Callback for WebSocket connection closure."""
         print("WebSocket connection closed:", message)
 
     def _on_ws_open(self):
-        """
-        Internal callback for handling WebSocket connection open event.
-        """
+        """(Internal) Callback for successful WebSocket connection."""
         print("WebSocket connection opened. Subscribing to symbols.")
         self.ws.subscribe(symbols=self.symbols, data_type=self.data_type)
         self.ws.keep_running()

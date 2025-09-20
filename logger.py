@@ -4,6 +4,23 @@ import logging.handlers
 
 
 def setup_logging():
+    """
+    Configures and sets up a centralized logger for the trading system.
+
+    This function initializes a logger named "system" with two handlers:
+    1.  A TimedRotatingFileHandler that saves logs to a file (`logs/system.log`),
+        with daily rotation. It keeps a backup of the last 7 days' logs.
+        This handler logs messages at the DEBUG level and above.
+    2.  A StreamHandler that outputs logs to the console. This handler
+        logs messages at the INFO level and above, providing a less
+        verbose output on the console compared to the log file.
+
+    The log format includes a timestamp, logger name, log level, filename,
+    line number, function name, process ID, and the log message itself.
+
+    Returns:
+        logging.Logger: The configured logger instance.
+    """
     # Determine package root directory and log directory
     package_dir = os.path.dirname(os.path.abspath(__file__))
     log_dir = os.path.join(package_dir, "logs")

@@ -6,14 +6,28 @@ from logger import logger
 
 class OrderTracker:
     """
-    Manages placing, tracking, and persisting orders.
-    Stores all orders in a dictionary with order_id as key.
-    Keeps track of the current active order.
-    Data is saved to and loaded from a JSON file.
+    Manages, tracks, and persists all trading orders.
+
+    This class is responsible for adding new orders, storing them in memory,
+    and persisting them to a JSON file for state management across sessions.
+    It keeps track of all orders, completed orders, and the most recent order.
+
+    Attributes:
+        orders_file (str): The file path for storing order data.
+        _all_orders (dict): A dictionary holding all orders, keyed by order_id.
+        _current_order (dict): The most recently added order.
+        _order_ids_completed (list): A list of IDs for completed orders.
     """
     def __init__(self, orders_file='artifacts/orders_data.json'):
+        """
+        Initializes the OrderTracker instance.
+
+        Args:
+            orders_file (str, optional): The path to the JSON file where orders
+                are stored. Defaults to 'artifacts/orders_data.json'.
+        """
         self.orders_file = orders_file
-        self._all_orders = {}       
+        self._all_orders = {}
         self._order_ids_not_completed = []
         self._current_order = None  # Private attribute for the most recent order
         self._load_orders()         # Load orders when the manager is initialized
@@ -22,8 +36,11 @@ class OrderTracker:
 
     def _load_orders(self):
         """
-        Loads all orders from the JSON file into the _all_orders dictionary.
-        This is a private helper method.
+        Loads orders from the JSON file into the in-memory dictionary.
+
+        If the file exists and is not empty, it loads the JSON content.
+        It also sets the `_current_order` to the one with the most recent
+        timestamp among the loaded orders.
         """
         # Ensure the directory exists
         os.makedirs(os.path.dirname(self.orders_file), exist_ok=True)
@@ -31,15 +48,10 @@ class OrderTracker:
         if os.path.exists(self.orders_file) and os.path.getsize(self.orders_file) > 0:
             try:
                 with open(self.orders_file, 'r') as f:
-                    # Load directly into the dictionary
                     self._all_orders = json.load(f)
                 logger.info(f"Loaded {len(self._all_orders)} orders from '{self.orders_file}'.")
 
-                # Set current_order to the last loaded order if any exist
-                # This requires iterating through keys, or having a separate mechanism
-                # A simple way is to find the order with the latest timestamp.
                 if self._all_orders:
-                    # Find the order with the latest timestamp
                     latest_order = None
                     latest_timestamp = None
                     for order_id, order_details in self._all_orders.items():
@@ -50,7 +62,7 @@ class OrderTracker:
                                 latest_order = order_details
                     self._current_order = latest_order
                     if self._current_order:
-                        logger.info(f"Current order set to: {self._current_order['order_id']}")
+                        logger.info(f"Current order set to: {self._current_order.get('order_id')}")
                     else:
                         logger.info("No valid current order found among loaded orders.")
             except json.JSONDecodeError:
@@ -68,14 +80,15 @@ class OrderTracker:
 
     def _save_orders(self):
         """
-        Saves all orders from the _all_orders dictionary to the JSON file.
-        This is a private helper method.
+        Saves the current dictionary of orders to the JSON file.
+
+        This method is called internally whenever the state of orders changes.
+        It pretty-prints the JSON for readability.
         """
         try:
-            # Ensure the directory exists before saving
             os.makedirs(os.path.dirname(self.orders_file), exist_ok=True)
             with open(self.orders_file, 'w') as f:
-                json.dump(self._all_orders, f, indent=4) # indent for pretty printing
+                json.dump(self._all_orders, f, indent=4)
             logger.info(f"Saved {len(self._all_orders)} orders to '{self.orders_file}'.")
         except IOError as e:
             logger.error(f"Error saving orders to '{self.orders_file}': {e}")
@@ -84,31 +97,32 @@ class OrderTracker:
 
     def add_order(self, order_details: dict):
         """
-        Adds a new order.
+        Adds a new order to the tracker and persists it.
+
+        The order details dictionary must contain a unique 'order_id'. If a
+        timestamp is not provided, the current time is added automatically.
+        After adding, all orders are saved to the file.
+
         Args:
-            order_details (dict): A dictionary containing the details of the order.
-                                  It MUST include a unique 'order_id'.
+            order_details (dict): A dictionary containing the details of the
+                order. Must include a unique 'order_id' key.
         """
         order_id = order_details.get('order_id')
         if not order_id:
             logger.error("Cannot place order: 'order_id' is missing from order_details.")
             return
 
-        # Ensure 'timestamp' is present and formatted consistently
         if 'timestamp' not in order_details:
             order_details['timestamp'] = datetime.now().isoformat()
 
-        # Update the current order
         self._current_order = order_details
         logger.info(f"Order being placed: {self._current_order}")
 
-        # Add or update in the dictionary
         if order_id in self._all_orders:
             logger.warning(f"Order with ID '{order_id}' already exists. Updating existing order.")
         self._all_orders[order_id] = self._current_order
         logger.info(f"Order '{order_id}' added/updated in in-memory dictionary.")
 
-        # Save all orders to disk after each placement
         self._save_orders()
         logger.info("Orders saved to disk.")
 
@@ -116,67 +130,89 @@ class OrderTracker:
     @property
     def current_order(self):
         """
-        Property to get the most recently placed order.
+        dict: The most recently placed order. Returns None if no orders exist.
         """
         return self._current_order
 
     @property
     def all_orders(self):
         """
-        Property to get a copy of all orders placed so far (as a dictionary).
-        Returns a copy to prevent external modification of the internal dictionary.
+        dict: A copy of all orders placed, keyed by order ID.
+
+        A copy is returned to prevent external modification of the internal state.
         """
-        return self._all_orders.copy() # Return a copy of the dictionary
+        return self._all_orders.copy()
 
     @property
     def completed_order_ids(self):
         """
-        Returns a list of completed order IDs.
+        list[str]: A list of completed order IDs.
         """
         return list(self._order_ids_completed)
 
     @property
     def completed_orders(self):
         """
-        Returns a list of completed order details (dicts).
+        list[dict]: A list of completed order detail dictionaries.
         """
         return [self._all_orders[oid] for oid in self._order_ids_completed if oid in self._all_orders]
 
     @property
     def non_completed_order_ids(self):
         """
-        Returns a list of non-completed order IDs.
+        list[str]: A list of order IDs that have not been marked as completed.
         """
         return [oid for oid in self._all_orders if oid not in self._order_ids_completed]
 
     @property
     def non_completed_orders(self):
         """
-        Returns a list of non-completed order details (dicts).
+        list[dict]: A list of non-completed order detail dictionaries.
         """
         return [self._all_orders[oid] for oid in self._all_orders if oid not in self._order_ids_completed]
 
     def get_order_by_id(self, order_id: str):
         """
-        Retrieves an order by its order_id (efficient dictionary lookup).
+        Retrieves a single order by its ID.
+
+        Args:
+            order_id (str): The unique identifier of the order.
+
+        Returns:
+            dict or None: The order dictionary if found, otherwise None.
         """
-        return self._all_orders.get(order_id) # Use .get() for safe access
+        return self._all_orders.get(order_id)
 
     def get_total_orders_count(self):
         """
-        Returns the total number of orders managed.
+        Returns the total number of orders being tracked.
+
+        Returns:
+            int: The total count of all orders.
         """
         return len(self._all_orders)
 
     def get_all_orders_as_list(self):
         """
-        Returns all orders as a list of dictionaries (useful for iteration if needed).
+        Returns all orders as a list of dictionaries.
+
+        Returns:
+            list[dict]: A list containing all order detail dictionaries.
         """
         return list(self._all_orders.values())
     
     def complete_order(self, order_id: str):
         """
         Marks an order as completed.
+
+        Adds the order ID to the list of completed orders and updates the
+        summary of completed order types.
+
+        Args:
+            order_id (str): The unique identifier of the order to mark as completed.
+
+        Returns:
+            bool: True if the order was found and marked as completed, False otherwise.
         """
         if order_id in self._all_orders:
             if order_id not in self._order_ids_completed:

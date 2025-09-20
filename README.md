@@ -1,114 +1,170 @@
-# trading-algo
-Code for certain trading strategies
-1. Survivor Algo is Live
+# Python Trading Algo Framework
 
-## Disclaimer:
-This algorithm is provided for **educational** and **informational purposes** only. Trading in financial markets involves substantial risk, and you may lose all or more than your initial investment. By using this algorithm, you acknowledge that all trading decisions are made at your own risk and discretion. The creators of this algorithm assume no liability or responsibility for any financial losses or damages incurred through its use. **Always do your own research and consult with a qualified financial advisor before trading.**
+This repository provides a lightweight, extensible framework for developing and running algorithmic trading strategies in Python. It includes a modular architecture with support for multiple brokers, a sample trading strategy, and tools for order management and logging.
 
+## Disclaimer
+
+This software is provided for **educational and informational purposes only**. Trading in financial markets involves substantial risk, and you may lose all or more than your initial investment. By using this software, you acknowledge that all trading decisions are made at your own risk. The creators assume no liability for any financial losses incurred through its use. **Always do your own research and consult with a qualified financial advisor before trading.**
+
+## Features
+
+- **Modular Architecture**: Easily extend the framework with new brokers or strategies.
+- **Multi-Broker Support**: Comes with pre-built support for Fyers (v3 API) and Zerodha (Kite Connect).
+- **Live & Paper Trading Ready**: Can be used with live broker credentials.
+- **Configuration Driven**: Manage strategy parameters via YAML files and command-line arguments.
+- **Sample Strategy**: Includes the "Survivor" options selling strategy as a practical example.
+
+## System Architecture
+
+The framework is designed with a clear separation of concerns to promote modularity and ease of development.
+
+```
++-------------------+      +---------------------+      +--------------------+
+|   Broker          |      |   Data Dispatcher   |      |   Strategy         |
+| (Fyers/Zerodha)   |----->| (dispatcher.py)     |----->| (survivor.py)      |
+| - Fetches data    |      | - Routes data       |      | - Implements logic |
+| - Executes orders |      | - Manages queue     |      | - Places orders    |
++-------------------+      +---------------------+      +--------------------+
+        ^                                                        |
+        |                                                        |
+        +--------------------------------------------------------+
+        |
++-------------------+
+|   Order Tracker   |
+| (orders.py)       |
+| - Tracks state    |
+| - Persists orders |
++-------------------+
+```
+
+### Core Components
+
+- **`brokers/`**: Contains the broker-specific implementations.
+  - **`base.py`**: An abstract base class defining the common interface for all brokers.
+  - **`fyers.py`**: Implementation for Fyers API v3, including TOTP authentication, REST calls, and WebSocket handling.
+  - **`zerodha.py`**: Implementation for Zerodha Kite Connect, supporting both automated and manual authentication.
+- **`dispatcher.py`**: A simple data router that decouples the data source (broker WebSocket) from the data consumer (strategy). It uses a queue to channel live market data to the strategy.
+- **`orders.py`**: Provides the `OrderTracker` class, which manages the state of all placed orders and persists them to a JSON file, allowing for state recovery between sessions.
+- **`logger.py`**: Configures a centralized, rotating file logger and a console logger for the entire application.
+- **`strategy/`**: The directory for housing trading strategies.
+  - **`survivor.py`**: An example options selling strategy that trades based on NIFTY index movements.
+  - **`configs/survivor.yml`**: The configuration file for the Survivor strategy.
 
 ## Setup
 
 ### 1. Install Dependencies
 
-To insall uv, use:
+This project uses `uv` for fast dependency management.
+
+First, install `uv`:
 ```bash
+# Using curl
 curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-or
 
-
-```bash
+# Or using pip
 pip install uv
 ```
 
-This uses `uv` for dependency management. Install dependencies:
+Then, sync the environment to install the required packages from `pyproject.toml`:
 ```bash
 uv sync
 ```
 
-Or if you prefer using pip:
+Alternatively, if you prefer `pip`, you can generate a `requirements.txt` from `pyproject.toml` and install from it.
 
+### 2. Configure Environment Variables
+
+Create a `.env` file by copying the sample file:
 ```bash
-pip install -r requirements.txt  # You may need to generate this from pyproject.toml
+cp .sample.env .env
 ```
 
-### 2. Environment Configuration
+Now, edit the `.env` file and add your broker credentials.
 
-1. Copy the sample environment file:
-   ```bash
-   cp .sample.env .env
-   ```
+**For Fyers:**
+```env
+# Set BROKER_NAME to fyers
+BROKER_NAME=fyers
+BROKER_TOTP_ENABLE=true
 
-2. Edit `.env` and fill in your broker credentials:
-   ```bash
-   # Broker Configuration - Supports Fyers, Zerodha
-   BROKER_NAME=fyers  # or zerodha
-   BROKER_API_KEY=<YOUR_API_KEY>
-   BROKER_API_SECRET=<YOUR_API_SECRET>
-   # items below can be skipped if not using TOTP (Fyers currently only has TOTP based login)
-   BROKER_TOTP_ENABLE=false # or true
-   BROKER_ID=<YOUR_BROKER_ID>
-   BROKER_TOTP_REDIDRECT_URI=<YOUR_TOTP_REDIRECT_URI>
-   BROKER_TOTP_KEY=<YOUR_TOTP_KEY>
-   BROKER_TOTP_PIN=<YOUR_TOTP_PIN>
-   BROKER_PASSWORD=<YOUR_BROKER_PASSWORD>  # Required for Zerodha
-   ```
+# Your Fyers API credentials
+BROKER_API_KEY=<YOUR_FYERS_API_KEY>
+BROKER_API_SECRET=<YOUR_FYERS_API_SECRET>
 
-### 3. Running Strategies
+# Your Fyers account details for TOTP login
+BROKER_ID=<YOUR_FYERS_ID>
+BROKER_TOTP_REDIDRECT_URI=<YOUR_FYERS_REDIRECT_URI>
+BROKER_TOTP_KEY=<YOUR_TOTP_SECRET_KEY>
+BROKER_TOTP_PIN=<YOUR_4_DIGIT_PIN>
+```
 
-Strategies should be placed in the `strategy/` folder.
+**For Zerodha:**
+```env
+# Set BROKER_NAME to zerodha
+BROKER_NAME=zerodha
 
-#### Running the Survivor Strategy
+# Set to true for automated login, false for manual request_token input
+BROKER_TOTP_ENABLE=true
 
+# Your Kite Connect API credentials
+BROKER_API_KEY=<YOUR_KITE_API_KEY>
+BROKER_API_SECRET=<YOUR_KITE_API_SECRET>
 
-**Basic usage (using default config):**
+# Required for automated login
+BROKER_ID=<YOUR_ZERODHA_USER_ID>
+BROKER_PASSWORD=<YOUR_ZERODHA_PASSWORD>
+BROKER_TOTP_KEY=<YOUR_TOTP_SECRET_KEY>
+```
+
+## Running the Survivor Strategy
+
+The `survivor.py` script can be run directly. It loads its default configuration from `strategy/configs/survivor.yml`.
+
+Navigate to the strategy directory to run it:
 ```bash
 cd strategy/
+```
+
+### Basic Usage
+This command runs the strategy using the default parameters defined in the YAML file.
+```bash
 python survivor.py
 ```
 
-**With custom parameters:**
+### Overriding Parameters
+You can override any configuration parameter using command-line arguments.
 ```bash
-cd strategy/
 python survivor.py \
     --symbol-initials NIFTY25JAN30 \
-    --pe-gap 25 --ce-gap 25 \
-    --pe-quantity 50 --ce-quantity 50 \
+    --pe-gap 25 \
+    --ce-gap 25 \
+    --pe-quantity 50 \
     --min-price-to-sell 15
 ```
 
-**View current configuration:**
+### Viewing Configuration
+To see the final configuration (after applying defaults and overrides) without running the strategy, use `--show-config`.
 ```bash
-cd strategy/
 python survivor.py --show-config
 ```
 
-### 4. Available Brokers
+## Extending the Framework
 
-- **Fyers**: Supports REST API for historical data, quotes, and WebSocket for live data
-- **Zerodha**: Supports KiteConnect API with order management and live data streaming
+### Adding a New Broker
 
-### 5. Core Components
+1.  **Create a New Class**: Create a new file in the `brokers/` directory (e.g., `mybroker.py`). Inside, define a class `MyBroker` that inherits from `BrokerBase`.
+2.  **Implement `authenticate`**: Implement the `authenticate` method with the specific logic required by your broker's API. It should handle credential management and return the necessary session object or access token.
+3.  **Implement Public Methods**: Add methods for core functionalities like `place_order`, `get_quote`, `get_history`, etc. Ensure the method signatures are consistent with how they are called in the strategies.
+4.  **Integrate with `connect_websocket`**: If the broker provides a WebSocket for live data, implement a method to connect to it and handle incoming messages. You can use the `DataDispatcher` to route data to the strategy.
 
-- `brokers/`: Broker implementations (Fyers, Zerodha)
-- `dispatcher.py`: Data routing and queue management
-- `orders.py`: Order management utilities
-- `logger.py`: Logging configuration
-- `strategy/`: Place your trading strategies here
+### Adding a New Strategy
 
-### Example Usage
-
-```python
-from brokers.fyers import FyersBroker
-from brokers.zerodha import ZerodhaBroker
-
-# Initialize broker based on environment
-if os.getenv('BROKER_NAME') == 'fyers':
-    broker = FyersBroker(symbols=['NSE:SBIN-EQ'])
-else:
-    broker = ZerodhaBroker(without_totp=True) # Only available for Zerodha
-
-# Get historical data, place orders, etc.
-```
-
-For more details, check the individual broker implementations and example strategies in the `strategy/` folder.
+1.  **Create a Strategy File**: Add a new Python file in the `strategy/` directory (e.g., `mystrategy.py`).
+2.  **Define the Strategy Class**: Create a class (e.g., `MyStrategy`) that will contain your trading logic. The `__init__` method should accept the `broker` and `order_manager` instances.
+3.  **Implement `on_ticks_update`**: Create a method, typically named `on_ticks_update(self, ticks)`, which will be the main entry point for processing live data from the `DataDispatcher`.
+4.  **Create a Runner Block**: In the `if __name__ == "__main__":` block of your file, add the necessary code to:
+    -   Initialize your chosen broker.
+    -   Set up the `DataDispatcher` and `OrderTracker`.
+    -   Connect to the broker's WebSocket.
+    -   Instantiate your strategy class.
+    -   Run a loop to get ticks from the dispatcher and pass them to your strategy's `on_ticks_update` method.
